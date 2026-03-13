@@ -1,0 +1,24 @@
+# Multi-stage build for the load balancer binary.
+# Stage 1: compile a statically linked Go binary.
+# Stage 2: copy into a minimal Alpine image for small container size.
+# Exposes 8080 (LB traffic) and 9080 (metrics server at port+1000).
+FROM golang:1.25-alpine AS build
+RUN apk add --no-cache git
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o lb ./cmd/lb
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+COPY --from=build /src/lb .
+COPY --from=build /src/config.yaml .
+
+EXPOSE 8080 9080
+ENTRYPOINT ["./lb"]
