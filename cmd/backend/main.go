@@ -91,8 +91,8 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
-// getLocalIP returns the first non-loopback IPv4 address found on the host.
-// Used to construct a readable server ID.
+// getLocalIP returns the first non-loopback, non-link-local IPv4 address
+// found on the host. Used to construct a readable server ID.
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -100,7 +100,7 @@ func getLocalIP() string {
 	}
 	for _, address := range addrs {
 		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
+			if ipnet.IP.To4() != nil && !ipnet.IP.IsLinkLocalUnicast() {
 				return ipnet.IP.String()
 			}
 		}
