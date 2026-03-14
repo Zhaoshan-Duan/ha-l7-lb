@@ -1,9 +1,11 @@
 # ECS Fargate service for backend servers.
-# Unlike the LB service, backends have no load balancer registration
-# (they are discovered by the LB via config.yaml endpoint URLs) and
-# no Redis connection.
+# Registers with AWS Cloud Map so the LB can resolve the internal
+# domain (api.internal) to the task's private IP.
+# No load balancer registration, no Redis connection.
 
-resource "aws_ecs_cluster" "this" { name = "${var.service_name}-cluster" }
+resource "aws_ecs_cluster" "this" {
+  name = "${var.service_name}-cluster"
+}
 
 resource "aws_ecs_task_definition" "this" {
   family                   = "${var.service_name}-task"
@@ -42,5 +44,12 @@ resource "aws_ecs_service" "this" {
     security_groups  = var.security_group_ids
     assign_public_ip = true
   }
+
+  # Cloud Map registration: Fargate auto-registers the task's private IP
+  # as an A-record under the service name.
+  service_registries {
+    registry_arn = var.service_registry_arn
+  }
+
   lifecycle { ignore_changes = [desired_count] }
 }

@@ -10,10 +10,10 @@ output "redis_endpoint" {
   value       = module.elasticache.redis_endpoint
 }
 
-output "backend_cluster_name" {
-  value = module.ecs_backend.cluster_name
-}
-
 output "lb_cluster_name" {
   value = module.ecs_lb.cluster_name
+}
+
+output "backend_cluster_name" {
+  value = module.ecs_backend.cluster_name
 }

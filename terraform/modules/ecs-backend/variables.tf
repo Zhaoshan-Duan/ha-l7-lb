@@ -48,3 +48,8 @@ variable "memory" {
   type    = string
   default = "512"
 }
+
+variable "service_registry_arn" {
+  description = "ARN of the AWS Cloud Map service for DNS registration."
+  type        = string
+}

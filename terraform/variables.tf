@@ -28,28 +28,19 @@ variable "lb_count" {
   default     = 2
 }
 
-variable "backend_count" {
-  description = "Number of backend ECS tasks."
-  type        = number
-  default     = 3
-}
-
 variable "backend_min" {
-  description = "Minimum backend tasks for autoscaling."
-  type        = number
-  default     = 3
+  type = number
+  default = 2
 }
 
 variable "backend_max" {
-  description = "Maximum backend tasks for autoscaling."
-  type        = number
-  default     = 6
+  type = number
+  default = 8
 }
 
 variable "cpu_target_value" {
-  description = "CPU utilization target for backend autoscaling."
-  type        = number
-  default     = 70
+  type = number
+  default = 70
 }
 
 variable "log_retention_days" {
