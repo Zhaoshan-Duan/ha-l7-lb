@@ -15,10 +15,10 @@ from locust import FastHttpUser, task, between
 #
 # Run this class twice under identical conditions:
 #   1. With config.yaml policy set to "round-robin" (stateless baseline).
-#   2. With policy set to "least-connections" (stateful, Redis-backed).
+#   2. With policy set to "least-connections" (stateful).
 # Compare throughput (RPS) and tail latency (p95/p99) between the two runs.
-# Any degradation in the least-connections run is attributable to Redis
-# state lookups on the routing hot path.
+# Any degradation in the least-connections run is attributable to the
+# connection-counting overhead on the routing hot path.
 #
 # Recommended: 100 to 2000 concurrent users, 3-5 minute runs.
 class AlgorithmCompareUser(FastHttpUser):
