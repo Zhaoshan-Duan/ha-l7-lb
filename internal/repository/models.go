@@ -7,7 +7,7 @@ import (
 )
 
 // ServerState represents the runtime state of a single backend server.
-// Instances are created once at startup and mutated in place.
+// Instances are created during startup and dynamic discovery, then mutated in place.
 //
 // The Healthy and LastCheck fields are protected by the InMemory mutex.
 // ActiveConnections is managed via atomic operations because it is read
@@ -15,7 +15,7 @@ import (
 // mutex, avoiding lock contention under high request concurrency.
 type ServerState struct {
 	ServerURL         url.URL
-	Weight            int       // Static; set from config at construction time.
+	Weight            int       // Base weight assigned to the backend.
 	Healthy           bool      // Guarded by InMemory.mu. Updated by health checker and proxy.
 	LastCheck         time.Time // Guarded by InMemory.mu. Timestamp of last health state change.
 	ActiveConnections int64     `redis:"active_connections"` // Atomic. Tracks in-flight proxied requests.

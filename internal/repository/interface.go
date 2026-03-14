@@ -12,10 +12,6 @@ import "net/url"
 // SharedState is the contract for all backend pool operations.
 // Every method must be safe for concurrent use by the proxy goroutines,
 // the health checker goroutine, and the Redis watcher goroutine.
-//
-// Invariant: the set of servers is fixed at construction time.
-// MarkHealthy and Add/RemoveConnections mutate fields on existing entries
-// but never add or remove servers from the pool.
 type SharedState interface {
 	// GetAllServers returns a snapshot of every registered backend
 	// regardless of health status. Used by the health checker to
@@ -40,4 +36,9 @@ type SharedState interface {
 	// RemoveConnections atomically decrements the active connection
 	// counter. Called after the proxied response completes or fails.
 	RemoveConnections(serverURL url.URL, connections int64)
+
+	// SyncServers dynamically updates the backend pool. It adds new IPs discovered
+	// via DNS and removes IPs that no longer exist, while preserving the active
+	// connections and health status of existing servers.
+	SyncServers(activeURLs []url.URL, defaultWeight int)
 }

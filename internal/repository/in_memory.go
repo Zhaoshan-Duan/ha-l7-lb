@@ -113,3 +113,34 @@ func (i *InMemory) RemoveConnections(serverURL url.URL, connections int64) {
 		}
 	}
 }
+
+// SyncServers reconciles the current server pool with a newly discovered list of URLs.
+func (i *InMemory) SyncServers(activeURLs []url.URL, defaultWeight int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	newServers := make([]*ServerState, 0, len(activeURLs))
+	existingMap := make(map[string]*ServerState)
+
+	for _, s := range i.servers {
+		existingMap[s.ServerURL.String()] = s
+	}
+
+	for _, u := range activeURLs {
+		urlStr := u.String()
+		if existing, found := existingMap[urlStr]; found {
+			// Preserve existing state (connections, health)
+			newServers = append(newServers, existing)
+		} else {
+			// Add new dynamically scaled backend
+			newServers = append(newServers, &ServerState{
+				ServerURL:         u,
+				Weight:            defaultWeight,
+				Healthy:           true, // Assume healthy until proven otherwise
+				LastCheck:         time.Now(),
+				ActiveConnections: 0,
+			})
+		}
+	}
+	i.servers = newServers
+}
