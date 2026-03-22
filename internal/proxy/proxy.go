@@ -101,8 +101,8 @@ func (lb *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	// Early exit if no backends are available.
-	healthy, _ := lb.pool.GetHealthy()
-	if len(healthy) == 0 {
+	healthyCheck, _ := lb.pool.GetHealthy()
+	if len(healthyCheck) == 0 {
 		http.Error(w, "No healthy backends", http.StatusServiceUnavailable)
 		return
 	}
@@ -150,8 +150,9 @@ func (lb *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}(backendURL.String())
 
-		// Select a different backend, excluding the one that just failed.
-		newBackendURL := lb.selectDifferent(healthy, &backendURL, r)
+		// Re-fetch healthy backends to reflect the just-marked-DOWN state.
+		freshHealthy, _ := lb.pool.GetHealthy()
+		newBackendURL := lb.selectDifferent(freshHealthy, &backendURL, r)
 		if newBackendURL != nil {
 			slog.Info(fmt.Sprintf("Retrying idempotent request on %s...", newBackendURL))
 
