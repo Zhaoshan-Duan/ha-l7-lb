@@ -26,12 +26,13 @@ type InMemory struct {
 func NewInMemory(servers []url.URL, weights []int) *InMemory {
 	serverStates := make([]*ServerState, 0, len(servers))
 	for i, server := range servers {
-		serverStates = append(serverStates, &ServerState{
+		s := &ServerState{
 			ServerURL: server,
 			Weight:    weights[i],
-			Healthy:   true,
 			LastCheck: time.Now(),
-		})
+		}
+		s.SetHealthy(true)
+		serverStates = append(serverStates, s)
 	}
 	return &InMemory{
 		servers: serverStates,
@@ -61,7 +62,7 @@ func (i *InMemory) GetHealthy() ([]*ServerState, error) {
 
 	healthy := make([]*ServerState, 0)
 	for _, s := range i.servers {
-		if s.Healthy {
+		if s.IsHealthy() {
 			healthy = append(healthy, s)
 		}
 	}
@@ -79,7 +80,7 @@ func (i *InMemory) MarkHealthy(serverURL url.URL, healthy bool) {
 
 	for _, s := range i.servers {
 		if s.ServerURL == serverURL {
-			s.Healthy = healthy
+			s.SetHealthy(healthy)
 			s.LastCheck = time.Now()
 			return
 		}
@@ -133,13 +134,14 @@ func (i *InMemory) SyncServers(activeURLs []url.URL, defaultWeight int) {
 			newServers = append(newServers, existing)
 		} else {
 			// Add new dynamically scaled backend
-			newServers = append(newServers, &ServerState{
+			s := &ServerState{
 				ServerURL:         u,
 				Weight:            defaultWeight,
-				Healthy:           true, // Assume healthy until proven otherwise
 				LastCheck:         time.Now(),
 				ActiveConnections: 0,
-			})
+			}
+			s.SetHealthy(true) // Assume healthy until proven otherwise
+			newServers = append(newServers, s)
 		}
 	}
 	i.servers = newServers

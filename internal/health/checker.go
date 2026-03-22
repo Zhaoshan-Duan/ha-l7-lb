@@ -93,7 +93,7 @@ func (hc *Checker) checkBackend(backend *repository.ServerState) {
 	}
 
 	// Publish only on state transition to avoid redundant Redis writes.
-	if backend.Healthy != isHealthy {
+	if backend.IsHealthy() != isHealthy {
 		slog.Info("Health Check", "backend", backend.ServerURL, "status", newStatus)
 		err = hc.updater.UpdateBackendStatus(backend.ServerURL, newStatus)
 		if err != nil {
