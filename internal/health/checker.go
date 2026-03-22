@@ -75,27 +75,35 @@ func (hc *Checker) checkBackend(backend *repository.ServerState) {
 
 	serverURL := backend.ServerURL.String() + "/health"
 	resp, err := client.Get(serverURL)
+
+	var isHealthy bool
 	if err != nil {
-		return
+		// Connection refused, DNS failure, timeout — treat as unhealthy.
+		isHealthy = false
+	} else {
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+		isHealthy = resp.StatusCode == http.StatusOK
 	}
-
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	isHealthy := resp.StatusCode == http.StatusOK
 
 	newStatus := "DOWN"
 	if isHealthy {
 		newStatus = "UP"
 	}
 
-	// Publish only on state transition to avoid redundant Redis writes.
-	if backend.Healthy != isHealthy {
+	// Update only on state transition.
+	if backend.IsHealthy() != isHealthy {
 		slog.Info("Health Check", "backend", backend.ServerURL, "status", newStatus)
-		err = hc.updater.UpdateBackendStatus(backend.ServerURL, newStatus)
-		if err != nil {
-			slog.Error("Failed to update state", "backend", backend.ServerURL, "error", err)
+
+		// Always update local state.
+		hc.pool.MarkHealthy(backend.ServerURL, isHealthy)
+
+		// Propagate to other LB instances via Redis if available.
+		if hc.updater != nil {
+			if err := hc.updater.UpdateBackendStatus(backend.ServerURL, newStatus); err != nil {
+				slog.Error("Failed to update state", "backend", backend.ServerURL, "error", err)
+			}
 		}
 	}
 }

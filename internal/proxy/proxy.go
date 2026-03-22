@@ -46,6 +46,7 @@ type ReverseProxy struct {
 	algo      algorithms.Rule        // Pluggable routing algorithm.
 	collector *metrics.Collector     // Request-level metrics accumulator.
 	updater   health.StatusUpdater   // Redis-backed health state propagator.
+	transport http.RoundTripper      // HTTP transport for backend requests.
 }
 
 // NewReverseProxy constructs a proxy wired to all subsystems.
@@ -55,6 +56,11 @@ func NewReverseProxy(pool repository.SharedState, algorithm algorithms.Rule, col
 		algo:      algorithm,
 		collector: collector,
 		updater:   updater,
+		transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     90 * time.Second,
+		},
 	}
 }
 
@@ -80,20 +86,23 @@ func (lb *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// resetBody replaces the consumed body with a fresh reader from the buffer.
+	// resetBody replaces the consumed body with a fresh reader from the buffer
+	// and restores ContentLength so backends receive the correct header.
 	resetBody := func(req *http.Request) {
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			req.ContentLength = int64(len(bodyBytes))
 		} else {
 			req.Body = http.NoBody
+			req.ContentLength = 0
 		}
 	}
 
 	startTime := time.Now()
 
 	// Early exit if no backends are available.
-	healthy, _ := lb.pool.GetHealthy()
-	if len(healthy) == 0 {
+	healthyCheck, _ := lb.pool.GetHealthy()
+	if len(healthyCheck) == 0 {
 		http.Error(w, "No healthy backends", http.StatusServiceUnavailable)
 		return
 	}
@@ -141,8 +150,9 @@ func (lb *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}(backendURL.String())
 
-		// Select a different backend, excluding the one that just failed.
-		newBackendURL := lb.selectDifferent(healthy, &backendURL, r)
+		// Re-fetch healthy backends to reflect the just-marked-DOWN state.
+		freshHealthy, _ := lb.pool.GetHealthy()
+		newBackendURL := lb.selectDifferent(freshHealthy, &backendURL, r)
 		if newBackendURL != nil {
 			slog.Info(fmt.Sprintf("Retrying idempotent request on %s...", newBackendURL))
 
@@ -185,7 +195,7 @@ func (lb *ReverseProxy) proxyRequest(w http.ResponseWriter, r *http.Request, des
 	outReq.Host = destURL.Host
 	outReq.RequestURI = "" // Required by http.Transport: must not be set on client requests.
 
-	resp, err := http.DefaultTransport.RoundTrip(outReq)
+	resp, err := lb.transport.RoundTrip(outReq)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return TimeoutError{URL: destURL.String()}
@@ -210,32 +220,34 @@ func (lb *ReverseProxy) proxyRequest(w http.ResponseWriter, r *http.Request, des
 	return nil
 }
 
-// selectDifferent constructs a temporary pool excluding the failed backend
-// and runs the algorithm against it. This guarantees the retry targets
-// a different server. Returns nil if no alternative exists (single-backend pool).
-func (lb *ReverseProxy) selectDifferent(backends []*repository.ServerState, exclude *url.URL, req *http.Request) *url.URL {
-	var filtered []url.URL
-	var filteredWeights []int
+// selectDifferent picks a retry target from the healthy backends, excluding
+// the one that just failed. Instead of creating an ephemeral pool (which
+// would reset connection counters and break least-connections), this selects
+// directly from the existing ServerState pointers, preserving live state.
+func (lb *ReverseProxy) selectDifferent(backends []*repository.ServerState, exclude *url.URL, _ *http.Request) *url.URL {
+	var candidates []*repository.ServerState
 	for _, b := range backends {
-		if b.ServerURL.String() != exclude.String() {
-			filtered = append(filtered, b.ServerURL)
-			filteredWeights = append(filteredWeights, b.Weight)
+		if b.ServerURL.String() != exclude.String() && b.IsHealthy() {
+			candidates = append(candidates, b)
 		}
 	}
 
-	if len(filtered) == 0 {
+	if len(candidates) == 0 {
 		return nil
 	}
 
-	// Create an ephemeral InMemory pool for single-use algorithm invocation.
-	filteredStates := repository.NewInMemory(filtered, filteredWeights)
-	var stateInterface repository.SharedState = filteredStates
-
-	target, err := lb.algo.GetTarget(&stateInterface, req)
-	if err != nil {
-		return nil
+	// Pick the candidate with the fewest active connections.
+	// This respects real counters for least-connections, and is a
+	// reasonable choice for round-robin/weighted as well.
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.GetActiveConnections() < best.GetActiveConnections() {
+			best = c
+		}
 	}
-	return &target
+
+	u := best.ServerURL
+	return &u
 }
 
 // isIdempotent returns true for methods safe to retry (GET, PUT, DELETE).

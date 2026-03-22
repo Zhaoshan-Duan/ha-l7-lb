@@ -9,16 +9,25 @@ import (
 // ServerState represents the runtime state of a single backend server.
 // Instances are created during startup and dynamic discovery, then mutated in place.
 //
-// The Healthy and LastCheck fields are protected by the InMemory mutex.
-// ActiveConnections is managed via atomic operations because it is read
-// by the LeastConnections algorithm on the hot path without holding the
-// mutex, avoiding lock contention under high request concurrency.
+// Healthy is an atomic.Bool so it can be read lock-free from health checkers,
+// metrics handlers, and proxy retry paths without acquiring InMemory.mu.
+// ActiveConnections is similarly managed via atomic operations.
 type ServerState struct {
 	ServerURL         url.URL
-	Weight            int       // Base weight assigned to the backend.
-	Healthy           bool      // Guarded by InMemory.mu. Updated by health checker and proxy.
-	LastCheck         time.Time // Guarded by InMemory.mu. Timestamp of last health state change.
-	ActiveConnections int64     `redis:"active_connections"` // Atomic. Tracks in-flight proxied requests.
+	Weight            int        // Base weight assigned to the backend.
+	Healthy           atomic.Bool // Atomic. Read lock-free by health checker and proxy.
+	LastCheck         time.Time  // Guarded by InMemory.mu. Timestamp of last health state change.
+	ActiveConnections int64      `redis:"active_connections"` // Atomic. Tracks in-flight proxied requests.
+}
+
+// IsHealthy returns the current health status using an atomic load.
+func (s *ServerState) IsHealthy() bool {
+	return s.Healthy.Load()
+}
+
+// SetHealthy updates the health status using an atomic store.
+func (s *ServerState) SetHealthy(healthy bool) {
+	s.Healthy.Store(healthy)
 }
 
 // GetActiveConnections returns the current in-flight request count
