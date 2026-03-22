@@ -99,44 +99,48 @@ func main() {
 	// Start Dynamic DNS Discovery in a background goroutine
 	discovery.StartDNSWatcher(context.Background(), hostname, port, scheme, defaultWeight, sharedState)
 
-	// Redis is mandatory for distributed state coordination.
-	if config.AppConfig.RedisConfig == nil {
-		slog.Error("Redis config required. Set REDIS_ADDR env var or configure in config.yaml.")
-		return
-	}
-	redisConf := config.AppConfig.RedisConfig
+	// Redis is optional: if unavailable, the LB runs in degraded mode
+	// with local-only health state (no cross-instance sync).
+	var updater health.StatusUpdater
+	if config.AppConfig.RedisConfig != nil {
+		redisConf := config.AppConfig.RedisConfig
+		slog.Info(fmt.Sprintf("Connecting to Redis at %s...", redisConf.Addr))
 
-	slog.Info(fmt.Sprintf("Connecting to Redis at %s...", redisConf.Addr))
+		redisMgr, redisErr := redismanager.NewRedisManager(redisConf.Addr, redisConf.Password, redisConf.DB, sharedState)
+		if redisErr != nil {
+			slog.Warn(fmt.Sprintf("Redis unavailable, running in degraded mode (local-only health): %v", redisErr))
+		} else {
+			defer func(redisMgr *redismanager.RedisManager) {
+				err := redisMgr.Close()
+				if err != nil {
+					slog.Error(fmt.Sprintf("Failed to close Redis manager: %v", err))
+				}
+			}(redisMgr)
 
-	redisMgr, err := redismanager.NewRedisManager(redisConf.Addr, redisConf.Password, redisConf.DB, sharedState)
-	if err != nil {
-		slog.Error(fmt.Sprintf("Failed to create Redis manager: %v", err))
-		return
-	}
-	defer func(redisMgr *redismanager.RedisManager) {
-		err := redisMgr.Close()
-		if err != nil {
-			slog.Error(fmt.Sprintf("Failed to close Redis manager: %v", err))
+			// Bootstrap local state from Redis (handles restarts where backends
+			// were already marked DOWN by other LB instances).
+			redisMgr.SyncOnStartUp()
+
+			// Subscribe to Pub/Sub for real-time cross-instance health updates.
+			redisMgr.StartRedisWatcher()
+
+			updater = redisMgr
 		}
-	}(redisMgr)
-
-	// Bootstrap local state from Redis (handles restarts where backends
-	// were already marked DOWN by other LB instances).
-	redisMgr.SyncOnStartUp()
-
-	// Subscribe to Pub/Sub for real-time cross-instance health updates.
-	redisMgr.StartRedisWatcher()
+	} else {
+		slog.Warn("No Redis config provided, running in degraded mode (local-only health)")
+	}
 
 	collector := metrics.NewCollector(route.Policy)
 
-	// Construct the reverse proxy. RedisManager satisfies health.StatusUpdater,
-	// so the proxy can publish failures to Redis without direct Redis awareness.
-	lb := proxy.NewReverseProxy(sharedState, policy, collector, redisMgr)
+	// Construct the reverse proxy. updater may be nil in degraded mode;
+	// the proxy already nil-checks before calling it.
+	lb := proxy.NewReverseProxy(sharedState, policy, collector, updater)
 
 	// Health checker: periodic /health GETs against all backends.
+	// In degraded mode, updater is nil — checker will update local state only.
 	checker := health.NewChecker(
 		sharedState,
-		redisMgr,
+		updater,
 		config.AppConfig.HealthCheck.Interval,
 		config.AppConfig.HealthCheck.Timeout,
 	)

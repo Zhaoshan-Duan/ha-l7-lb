@@ -92,12 +92,18 @@ func (hc *Checker) checkBackend(backend *repository.ServerState) {
 		newStatus = "UP"
 	}
 
-	// Publish only on state transition to avoid redundant Redis writes.
+	// Update only on state transition.
 	if backend.IsHealthy() != isHealthy {
 		slog.Info("Health Check", "backend", backend.ServerURL, "status", newStatus)
-		err = hc.updater.UpdateBackendStatus(backend.ServerURL, newStatus)
-		if err != nil {
-			slog.Error("Failed to update state", "backend", backend.ServerURL, "error", err)
+
+		// Always update local state.
+		hc.pool.MarkHealthy(backend.ServerURL, isHealthy)
+
+		// Propagate to other LB instances via Redis if available.
+		if hc.updater != nil {
+			if err := hc.updater.UpdateBackendStatus(backend.ServerURL, newStatus); err != nil {
+				slog.Error("Failed to update state", "backend", backend.ServerURL, "error", err)
+			}
 		}
 	}
 }
