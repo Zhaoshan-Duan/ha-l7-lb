@@ -14,6 +14,7 @@ package redismanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -140,13 +141,18 @@ func (rm *RedisManager) SyncOnStartUp() {
 			healthy := val == "UP"
 			rm.pool.MarkHealthy(backend.ServerURL, healthy)
 			slog.Info(fmt.Sprintf("Synced %s from Redis: %v", backend.ServerURL.String(), healthy))
-		} else {
-			// Key does not exist; initialize it as UP.
+		} else if errors.Is(err, redis.Nil) {
+			// Key does not exist (first deployment); initialize as UP.
 			if err := rm.UpdateBackendStatus(backend.ServerURL, "UP"); err != nil {
 				slog.Error("Failed to initialize backend state in Redis",
 					"backend", backend.ServerURL.String(),
 					"error", err)
 			}
+		} else {
+			// Network error or other Redis failure — skip to prevent state corruption.
+			slog.Error("Redis error during sync, skipping backend",
+				"backend", backend.ServerURL.String(),
+				"error", err)
 		}
 	}
 }
