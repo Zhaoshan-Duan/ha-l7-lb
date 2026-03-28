@@ -48,9 +48,10 @@ type Config struct {
 	} `yaml:"health_check"`
 
 	// RedisConfig is a pointer so it can be nil (omitted from YAML).
-	// The LB requires Redis; if nil after loading, the process exits.
+	// Redis is optional: if unavailable or unconfigured, the LB runs
+	// in degraded mode with local-only health tracking (no cross-instance sync).
 	RedisConfig *struct {
-		Addr     string `yaml:"addr"`     // Single: "host:6379". Cluster: "h1:6379,h2:6379".
+		Addr     string `yaml:"addr"` // Single: "host:6379". Cluster: "h1:6379,h2:6379".
 		Password string `yaml:"password"`
 		DB       int    `yaml:"db"` // Ignored in cluster mode.
 	} `yaml:"redis"`
