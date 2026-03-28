@@ -59,7 +59,11 @@ func (wrr *Weighted) GetTarget(state *repository.SharedState, _ *http.Request) (
 	for _, server := range servers {
 		candidates = append(candidates, server.ServerURL)
 		if _, ok := wrr.Weights[server.ServerURL]; !ok {
-			wrr.Weights[server.ServerURL] = []int{server.Weight, server.Weight}
+			weight := server.Weight
+			if weight <= 0 {
+				weight = 1 // safe fallback for invalid weights
+			}
+			wrr.Weights[server.ServerURL] = []int{weight, weight}
 		}
 	}
 
@@ -69,7 +73,7 @@ func (wrr *Weighted) GetTarget(state *repository.SharedState, _ *http.Request) (
 	for len(candidates) != 0 {
 		ri := rand.Intn(len(candidates))
 		candidate = candidates[ri]
-		if wrr.Weights[candidate][1] != 0 {
+		if wrr.Weights[candidate][1] > 0 {
 			reset = false
 			break
 		}
