@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"log/slog"
 	"net/url"
 	"sync"
 	"time"
@@ -150,12 +151,17 @@ func (i *InMemory) SyncServers(activeURLs []url.URL, defaultWeight int) {
 	}
 
 	// Backends no longer in DNS: drain rather than drop immediately.
+	// Backends with active connections are kept as draining and unhealthy.
+	// Backends whose connections have drained to 0 are removed from the pool.
 	for _, s := range i.servers {
 		if !activeSet[s.ServerURL.String()] {
 			if s.GetActiveConnections() > 0 {
 				s.SetDraining(true)
 				s.SetHealthy(false)
 				newServers = append(newServers, s)
+			} else if s.IsDraining() {
+				slog.Info("Draining backend removed (connections drained to 0)",
+					"backend", s.ServerURL.String())
 			}
 		}
 	}
