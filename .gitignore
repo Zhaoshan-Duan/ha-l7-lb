@@ -28,3 +28,8 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Claude Code
+CLAUDE.md
+CODEBASE_REPORT.md
+.reports/
