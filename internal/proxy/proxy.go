@@ -39,6 +39,8 @@ import (
 	"github.com/karthikeyansura/ha-l7-lb/internal/repository"
 )
 
+const maxBodySize = 10 << 20 // 10 MB payload limit to prevent OOM on buffered retries
+
 // ReverseProxy implements http.Handler. Each incoming request is routed
 // to a backend, proxied, and optionally retried on failure.
 type ReverseProxy struct {
@@ -75,8 +77,14 @@ func (lb *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var bodyBytes []byte
 	var err error
 	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		bodyBytes, err = io.ReadAll(r.Body)
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 			return
 		}
