@@ -14,10 +14,11 @@ import (
 // ActiveConnections is similarly managed via atomic operations.
 type ServerState struct {
 	ServerURL         url.URL
-	Weight            int        // Base weight assigned to the backend.
+	Weight            int         // Base weight assigned to the backend.
 	Healthy           atomic.Bool // Atomic. Read lock-free by health checker and proxy.
-	LastCheck         time.Time  // Guarded by InMemory.mu. Timestamp of last health state change.
-	ActiveConnections int64      `redis:"active_connections"` // Atomic. Tracks in-flight proxied requests.
+	LastCheck         time.Time   // Guarded by InMemory.mu. Timestamp of last health state change.
+	ActiveConnections int64       `redis:"active_connections"` // Atomic. Tracks in-flight proxied requests.
+	Draining          atomic.Bool // Atomic. True when backend is being removed but has in-flight requests.
 }
 
 // IsHealthy returns the current health status using an atomic load.
@@ -43,4 +44,16 @@ func (s *ServerState) GetActiveConnections() int64 {
 // when multiple proxy goroutines modify the same backend concurrently.
 func (s *ServerState) AddConnections(connections int64) {
 	atomic.AddInt64(&s.ActiveConnections, connections)
+}
+
+// IsDraining returns whether this backend is in connection-draining state.
+// A draining backend accepts no new requests but completes in-flight ones.
+func (s *ServerState) IsDraining() bool {
+	return s.Draining.Load()
+}
+
+// SetDraining marks this backend as draining (being removed from DNS)
+// using an atomic store.
+func (s *ServerState) SetDraining(draining bool) {
+	s.Draining.Store(draining)
 }

@@ -120,6 +120,11 @@ func (i *InMemory) SyncServers(activeURLs []url.URL, defaultWeight int) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	activeSet := make(map[string]bool, len(activeURLs))
+	for _, u := range activeURLs {
+		activeSet[u.String()] = true
+	}
+
 	newServers := make([]*ServerState, 0, len(activeURLs))
 	existingMap := make(map[string]*ServerState)
 
@@ -130,19 +135,30 @@ func (i *InMemory) SyncServers(activeURLs []url.URL, defaultWeight int) {
 	for _, u := range activeURLs {
 		urlStr := u.String()
 		if existing, found := existingMap[urlStr]; found {
-			// Preserve existing state (connections, health)
+			existing.SetDraining(false)
 			newServers = append(newServers, existing)
 		} else {
-			// Add new dynamically scaled backend
 			s := &ServerState{
 				ServerURL:         u,
 				Weight:            defaultWeight,
 				LastCheck:         time.Now(),
 				ActiveConnections: 0,
 			}
-			s.SetHealthy(true) // Assume healthy until proven otherwise
+			s.SetHealthy(true)
 			newServers = append(newServers, s)
 		}
 	}
+
+	// Backends no longer in DNS: drain rather than drop immediately.
+	for _, s := range i.servers {
+		if !activeSet[s.ServerURL.String()] {
+			if s.GetActiveConnections() > 0 {
+				s.SetDraining(true)
+				s.SetHealthy(false)
+				newServers = append(newServers, s)
+			}
+		}
+	}
+
 	i.servers = newServers
 }
