@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/karthikeyansura/ha-l7-lb/internal/algorithms"
@@ -139,6 +140,12 @@ func (lb *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Error(fmt.Sprintf("Request to %s failed: %v", backendURL.String(), err))
+
+	// Client-side disconnects are not backend failures; do not retry or mark DOWN.
+	if isClientDisconnect(err) {
+		lb.collector.RecordRequest(backendURL.String(), time.Since(startTime), false, false, false)
+		return
+	}
 
 	// Retry logic: only for HTTP methods that are safe to re-execute.
 	// GET, PUT, DELETE are idempotent per RFC 7231. POST, PATCH are not.
@@ -272,6 +279,18 @@ func (lb *ReverseProxy) selectDifferent(backends []*repository.ServerState, excl
 // isIdempotent returns true for methods safe to retry (GET, PUT, DELETE).
 func isIdempotent(method string) bool {
 	return method == "GET" || method == "PUT" || method == "DELETE"
+}
+
+// isClientDisconnect returns true if the error was caused by the client
+// disconnecting (cancelled context, broken pipe, connection reset).
+// These are not backend failures and should not trigger DOWN events.
+func isClientDisconnect(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "connection reset by peer")
 }
 
 // TimeoutError indicates a backend request exceeded the 2-second deadline.
