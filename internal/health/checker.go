@@ -93,9 +93,15 @@ func (hc *Checker) checkAll() {
 // within the configured timeout. Any other outcome (error, non-200 status,
 // timeout) marks the backend as DOWN.
 //
+// Draining backends are skipped entirely: they are already marked unhealthy
+// and are waiting for in-flight connections to complete before removal.
+//
 // State changes only: if the probed status matches the current Healthy flag,
 // no update is published. This minimizes Redis write frequency.
 func (hc *Checker) checkBackend(backend *repository.ServerState) {
+	if backend.IsDraining() {
+		return
+	}
 	serverURL := backend.ServerURL.String() + "/health"
 	resp, err := hc.client.Get(serverURL)
 
