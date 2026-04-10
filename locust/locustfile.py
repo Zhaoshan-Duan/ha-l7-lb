@@ -62,7 +62,7 @@ class AlgorithmCompareUser(FastHttpUser):
 # Experiment 2: Failure Isolation and Retry Efficacy under Chaos.
 #
 # Injects degradation via X-Chaos-Error (500 responses) and X-Chaos-Delay
-# (multi-second latency exceeding the proxy's 2s timeout) headers.
+# (multi-second latency exceeding the proxy's timeout) headers.
 #
 # Run twice:
 #   1. With retry logic enabled (default).
@@ -105,11 +105,11 @@ class ChaosInjectionUser(FastHttpUser):
             else:
                 resp.failure(f"Unexpected: {resp.status_code}")
 
-    # Chaos: sleep 3-10 seconds at the backend, exceeding the proxy's
-    # 2-second timeout. Should trigger a retry on a healthy backend.
+    # Chaos: sleep 6-10 seconds at the backend, exceeding the proxy's
+    # 5-second timeout. Should trigger a retry on a healthy backend.
     @task(1)
     def chaos_delay_request(self):
-        delay_ms = random.choice([3000, 5000, 10000])
+        delay_ms = random.choice([6000, 8000, 10000])
         with self.client.get(
                 "/api/data",
                 headers={"X-Chaos-Delay": str(delay_ms)},
@@ -183,3 +183,63 @@ class ScalingSpikeUser(FastHttpUser):
                 resp.success()
             else:
                 resp.failure(f"Failed: {resp.status_code}")
+
+
+# Backend Stress Test: exercises the heavier backend endpoints to prove
+# the load balancer holds up under realistic workloads (CPU-bound compute,
+# large payloads, long-lived streaming connections).
+#
+# Task mix: 40% compute (CPU), 30% lightweight data, 15% payload (bandwidth),
+# 15% stream (connection holding).
+#
+# Recommended: 100 to 500 concurrent users, 3-5 minute runs.
+class BackendStressUser(FastHttpUser):
+    wait_time = between(0.05, 0.2)
+
+    @task(4)
+    def compute(self):
+        with self.client.get(
+                "/api/compute",
+                name="/api/compute",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Compute failed: {resp.status_code}")
+
+    @task(3)
+    def api_data(self):
+        with self.client.get(
+                "/api/data",
+                name="/api/data",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Failed: {resp.status_code}")
+
+    @task(2)
+    def payload(self):
+        with self.client.get(
+                "/api/payload",
+                name="/api/payload (1MB)",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Payload failed: {resp.status_code}")
+
+    @task(1)
+    def stream(self):
+        with self.client.get(
+                "/api/stream",
+                name="/api/stream (chunked)",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Stream failed: {resp.status_code}")
