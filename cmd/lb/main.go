@@ -13,7 +13,7 @@
 //  1. Load config (YAML + REDIS_ADDR env override).
 //  2. Parse base target URL and instantiate the routing algorithm.
 //  3. Create empty InMemory shared state.
-//  4. Start Dynamic DNS Discovery in a background goroutine to populate the state.
+//  4. Start one DNS watcher per configured backend endpoint.
 //  5. Connect to Redis; if unavailable, degrade to local-only health mode.
 //  6. Sync local state from Redis (handles LB restart scenarios).
 //  7. Start periodic re-sync ticker (heals missed Pub/Sub events).
@@ -29,6 +29,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -78,31 +79,30 @@ func main() {
 		return
 	}
 
-	// Extract the base Cloud Map target from the first configured backend
 	if len(route.Backends) == 0 {
 		slog.Error("At least one backend must be configured to extract the discovery domain.")
 		return
 	}
-	baseTarget, err := url.Parse(route.Backends[0].Endpoint)
-	if err != nil {
-		slog.Error("Invalid backend endpoint URL format", "error", err)
-		return
-	}
 
-	hostname := baseTarget.Hostname()
-	port := baseTarget.Port()
-	scheme := baseTarget.Scheme
-	defaultWeight := route.Backends[0].Weight
-
-	// Initialize with an empty pool; the DNS worker will populate it immediately.
+	// Initialize with an empty pool; DNS watchers will populate it immediately.
 	sharedState := repository.NewInMemory([]url.URL{}, []int{})
 
 	// Cancellable context for all background goroutines — cancelled on SIGTERM/SIGINT.
 	ctx, cancelAll := context.WithCancel(context.Background())
 	defer cancelAll()
 
-	// Start Dynamic DNS Discovery in a background goroutine
-	discovery.StartDNSWatcher(ctx, hostname, port, scheme, defaultWeight, sharedState)
+	// Start one DNS watcher per configured backend endpoint.
+	// Each watcher resolves its hostname independently and syncs with its own
+	// weight, enabling heterogeneous backends (e.g., strong/weak) for weighted RR.
+	for _, backend := range route.Backends {
+		target, err := url.Parse(backend.Endpoint)
+		if err != nil {
+			slog.Error("Invalid backend endpoint URL format", "endpoint", backend.Endpoint, "error", err)
+			return
+		}
+		discovery.StartDNSWatcher(ctx, target.Hostname(), target.Hostname(), target.Port(), target.Scheme, backend.Weight, sharedState)
+		slog.Info("DNS watcher started", "hostname", target.Hostname(), "weight", backend.Weight)
+	}
 
 	// Redis is optional: if unavailable, the LB runs in degraded mode
 	// with local-only health state (no cross-instance sync).
@@ -182,10 +182,9 @@ func main() {
 	setupGracefulShutdown(collector, *metricsOut, server, metricsServer, cancelAll, done)
 
 	slog.Info(fmt.Sprintf("Load balancer starting on %s with %s policy", addr, route.Policy))
-	slog.Info(fmt.Sprintf("Base discovery target: %s", route.Backends[0].Endpoint))
 	slog.Info(fmt.Sprintf("Metrics available at http://localhost:%d/metrics", config.AppConfig.LoadBalancer.Port+1000))
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 
@@ -256,7 +255,7 @@ func startMetricsServer(collector *metrics.Collector, pool repository.SharedStat
 	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error(fmt.Sprintf("Metrics server error: %v", err))
 		}
 	}()

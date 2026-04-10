@@ -41,4 +41,11 @@ type SharedState interface {
 	// via DNS and removes IPs that no longer exist, while preserving the active
 	// connections and health status of existing servers.
 	SyncServers(activeURLs []url.URL, defaultWeight int)
+
+	// SyncServersBySource reconciles the pool for a single DNS source.
+	// Only servers with a matching sourceTag are affected; other sources'
+	// servers are preserved. This enables multiple DNS watchers (e.g.,
+	// api-strong.internal and api-weak.internal) to coexist in one pool
+	// without overwriting each other.
+	SyncServersBySource(sourceTag string, activeURLs []url.URL, weight int)
 }

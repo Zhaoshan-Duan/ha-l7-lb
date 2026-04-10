@@ -281,3 +281,90 @@ func TestSyncServers_ReapsDrainedBackend(t *testing.T) {
 		t.Errorf("expected backend1, got %s", servers[0].ServerURL.String())
 	}
 }
+
+func TestSyncServersBySource_MultipleSourcesCoexist(t *testing.T) {
+	pool := NewInMemory([]url.URL{}, []int{})
+
+	strongURLs := []url.URL{mustURL("http://10.0.1.1:8080"), mustURL("http://10.0.1.2:8080")}
+	weakURLs := []url.URL{mustURL("http://10.0.2.1:8080"), mustURL("http://10.0.2.2:8080")}
+
+	pool.SyncServersBySource("strong", strongURLs, 70)
+	pool.SyncServersBySource("weak", weakURLs, 30)
+
+	servers, _ := pool.GetAllServers()
+	if len(servers) != 4 {
+		t.Fatalf("expected 4 servers (2 strong + 2 weak), got %d", len(servers))
+	}
+
+	weights := map[string]int{}
+	for _, s := range servers {
+		weights[s.ServerURL.String()] = s.Weight
+	}
+	if weights["http://10.0.1.1:8080"] != 70 {
+		t.Errorf("expected strong weight 70, got %d", weights["http://10.0.1.1:8080"])
+	}
+	if weights["http://10.0.2.1:8080"] != 30 {
+		t.Errorf("expected weak weight 30, got %d", weights["http://10.0.2.1:8080"])
+	}
+}
+
+func TestSyncServersBySource_DoesNotOverwriteOtherSource(t *testing.T) {
+	pool := NewInMemory([]url.URL{}, []int{})
+
+	strongURLs := []url.URL{mustURL("http://10.0.1.1:8080")}
+	weakURLs := []url.URL{mustURL("http://10.0.2.1:8080")}
+
+	pool.SyncServersBySource("strong", strongURLs, 70)
+	pool.SyncServersBySource("weak", weakURLs, 30)
+
+	// Re-sync strong with a different set — weak should be untouched.
+	newStrongURLs := []url.URL{mustURL("http://10.0.1.3:8080")}
+	pool.SyncServersBySource("strong", newStrongURLs, 70)
+
+	servers, _ := pool.GetAllServers()
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 servers (1 new strong + 1 weak), got %d", len(servers))
+	}
+
+	found := map[string]bool{}
+	for _, s := range servers {
+		found[s.ServerURL.String()] = true
+	}
+	if !found["http://10.0.1.3:8080"] {
+		t.Error("new strong backend should be present")
+	}
+	if !found["http://10.0.2.1:8080"] {
+		t.Error("weak backend should be preserved across strong re-sync")
+	}
+}
+
+func TestSyncServersBySource_DrainsRemovedBackend(t *testing.T) {
+	pool := NewInMemory([]url.URL{}, []int{})
+
+	urls := []url.URL{mustURL("http://10.0.1.1:8080"), mustURL("http://10.0.1.2:8080")}
+	pool.SyncServersBySource("strong", urls, 70)
+
+	// Add connections to the second backend.
+	pool.AddConnections(mustURL("http://10.0.1.2:8080"), 5)
+
+	// Re-sync strong with only the first — second should drain.
+	pool.SyncServersBySource("strong", []url.URL{mustURL("http://10.0.1.1:8080")}, 70)
+
+	servers, _ := pool.GetAllServers()
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 servers (1 active + 1 draining), got %d", len(servers))
+	}
+
+	for _, s := range servers {
+		if s.ServerURL.String() == "http://10.0.1.2:8080" {
+			if !s.IsDraining() {
+				t.Error("removed backend with active connections should be draining")
+			}
+			if s.IsHealthy() {
+				t.Error("draining backend should be unhealthy")
+			}
+			return
+		}
+	}
+	t.Error("draining backend should still be in pool")
+}
