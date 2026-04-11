@@ -1,8 +1,11 @@
 // Backend server for the HA L7 Load Balancer system.
 //
-// Provides two endpoints:
+// Provides endpoints:
 //   - /health: unconditional 200 OK, used by the LB health checker.
 //   - /api/data: primary workload endpoint with chaos injection support.
+//   - /api/compute: CPU-bound workload (iterated SHA-256 hashing).
+//   - /api/payload: large response body (1MB JSON) for bandwidth stress.
+//   - /api/stream: chunked transfer over ~2 seconds for connection hold.
 //
 // Chaos injection (Experiment 2): the /api/data handler inspects two
 // request headers to simulate failure modes:
@@ -23,6 +26,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"log"
@@ -30,6 +34,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,7 +71,7 @@ func main() {
 		}
 
 		// Chaos: artificial latency. Sleeps before response, may exceed
-		// the proxy's 2-second timeout and trigger a retry.
+		// the proxy's timeout and trigger a retry.
 		if delay := r.Header.Get("X-Chaos-Delay"); delay != "" {
 			ms, err := strconv.Atoi(delay)
 			if err == nil && ms > 0 {
@@ -84,6 +89,71 @@ func main() {
 		w.Header().Set("X-Backend-ID", serverID)
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, `{"server":"%s","status":"ok"}`, serverID)
+	})
+
+	// CPU-bound workload: iterates SHA-256 hashing to consume CPU cycles.
+	// Accepts an optional ?iterations=N query parameter (default 50000).
+	// On a 256-CPU Fargate task this takes ~100-300ms, producing measurable
+	// latency differences between strong and weak backends.
+	http.HandleFunc("/api/compute", func(w http.ResponseWriter, r *http.Request) {
+		iterations := 50000
+		if v := r.URL.Query().Get("iterations"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500000 {
+				iterations = n
+			}
+		}
+
+		hash := sha256.Sum256([]byte(serverID))
+		for i := 0; i < iterations; i++ {
+			hash = sha256.Sum256(hash[:])
+		}
+
+		w.Header().Set("X-Backend-ID", serverID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"server":"%s","iterations":%d,"hash":"%x"}`, serverID, iterations, hash[:8])
+	})
+
+	// Large payload workload: returns a ~1MB JSON response body.
+	// Exercises the proxy's response streaming path (io.Copy) and verifies
+	// that large transfers complete without corruption or timeout.
+	http.HandleFunc("/api/payload", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-ID", serverID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// ~1MB: 1024 lines of ~1000 chars each.
+		_, _ = fmt.Fprintf(w, `{"server":"%s","lines":[`, serverID)
+		line := strings.Repeat("x", 990)
+		for i := 0; i < 1024; i++ {
+			if i > 0 {
+				_, _ = fmt.Fprint(w, ",")
+			}
+			_, _ = fmt.Fprintf(w, `"%s"`, line)
+		}
+		_, _ = fmt.Fprint(w, "]}")
+	})
+
+	// Chunked streaming workload: sends 10 chunks over ~2 seconds.
+	// Holds the proxy connection open to test LeastConnections accuracy
+	// under sustained concurrent connections. Stays within the 5s proxy timeout.
+	http.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("X-Backend-ID", serverID)
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.WriteHeader(http.StatusOK)
+
+		for i := 0; i < 10; i++ {
+			_, _ = fmt.Fprintf(w, "chunk %d from %s\n", i, serverID)
+			flusher.Flush()
+			time.Sleep(200 * time.Millisecond)
+		}
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
