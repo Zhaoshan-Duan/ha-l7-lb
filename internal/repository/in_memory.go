@@ -168,3 +168,68 @@ func (i *InMemory) SyncServers(activeURLs []url.URL, defaultWeight int) {
 
 	i.servers = newServers
 }
+
+// SyncServersBySource reconciles the pool for a single DNS source.
+// Only servers with a matching SourceTag are affected; other sources'
+// servers are preserved. This enables multiple DNS watchers (e.g.,
+// api-strong.internal and api-weak.internal) to coexist in one pool
+// without overwriting each other.
+func (i *InMemory) SyncServersBySource(sourceTag string, activeURLs []url.URL, weight int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	activeSet := make(map[string]bool, len(activeURLs))
+	for _, u := range activeURLs {
+		activeSet[u.String()] = true
+	}
+
+	existingMap := make(map[string]*ServerState)
+	for _, s := range i.servers {
+		if s.SourceTag == sourceTag {
+			existingMap[s.ServerURL.String()] = s
+		}
+	}
+
+	// Keep all servers from OTHER sources untouched.
+	newServers := make([]*ServerState, 0, len(i.servers))
+	for _, s := range i.servers {
+		if s.SourceTag != sourceTag {
+			newServers = append(newServers, s)
+		}
+	}
+
+	// Add/update servers for THIS source.
+	for _, u := range activeURLs {
+		urlStr := u.String()
+		if existing, found := existingMap[urlStr]; found {
+			existing.SetDraining(false)
+			newServers = append(newServers, existing)
+		} else {
+			s := &ServerState{
+				ServerURL:         u,
+				Weight:            weight,
+				LastCheck:         time.Now(),
+				ActiveConnections: 0,
+				SourceTag:         sourceTag,
+			}
+			s.SetHealthy(true)
+			newServers = append(newServers, s)
+		}
+	}
+
+	// Drain removed backends from this source.
+	for _, s := range i.servers {
+		if s.SourceTag == sourceTag && !activeSet[s.ServerURL.String()] {
+			if s.GetActiveConnections() > 0 {
+				s.SetDraining(true)
+				s.SetHealthy(false)
+				newServers = append(newServers, s)
+			} else if s.IsDraining() {
+				slog.Info("Draining backend removed (connections drained to 0)",
+					"backend", s.ServerURL.String(), "source", sourceTag)
+			}
+		}
+	}
+
+	i.servers = newServers
+}

@@ -19,6 +19,7 @@ type ServerState struct {
 	LastCheck         time.Time   // Guarded by InMemory.mu. Timestamp of last health state change.
 	ActiveConnections int64       `redis:"active_connections"` // Atomic. Tracks in-flight proxied requests.
 	Draining          atomic.Bool // Atomic. True when backend is being removed but has in-flight requests.
+	SourceTag         string      // DNS source that discovered this backend (e.g., "api-strong.internal").
 }
 
 // IsHealthy returns the current health status using an atomic load.
