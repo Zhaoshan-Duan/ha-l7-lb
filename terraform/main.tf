@@ -113,6 +113,7 @@ module "ecs_lb" {
   region             = var.aws_region
   target_group_arn   = module.nlb.target_group_arn
   redis_addr         = module.elasticache.redis_endpoint
+  retries_enabled    = var.retries_enabled
   depends_on         = [docker_registry_image.lb]
 }
 
@@ -140,4 +141,18 @@ resource "docker_image" "backend" {
 
 resource "docker_registry_image" "backend" {
   name = docker_image.backend.name
+}
+
+# --- Locust Load Generator ---
+#
+# Single EC2 in the default VPC that runs Locust in headless mode.
+# Driven remotely via `aws ssm send-command`; results land in S3.
+
+module "locust" {
+  source               = "./modules/locust"
+  service_name         = var.service_name
+  vpc_id               = module.network.vpc_id
+  subnet_id            = module.network.subnet_ids[0]
+  nlb_dns_name         = module.nlb.nlb_dns_name
+  lb_security_group_id = module.network.lb_security_group_id
 }

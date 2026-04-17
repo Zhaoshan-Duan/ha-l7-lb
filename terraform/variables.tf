@@ -47,3 +47,11 @@ variable "log_retention_days" {
   type    = number
   default = 7
 }
+
+# Experiment 2: flip to false via `terraform apply -var=retries_enabled=false`
+# to run the retries-disabled variant without rebuilding the LB image.
+variable "retries_enabled" {
+  description = "Whether the LB retries failed idempotent requests. Experiment 2 toggle."
+  type        = bool
+  default     = true
+}
