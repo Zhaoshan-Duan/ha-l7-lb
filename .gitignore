@@ -17,6 +17,11 @@ terraform/.terraform.tfstate.lock.info
 terraform/*.tfvars
 terraform/crash.log
 terraform/crash.*.log
+terraform/tfplan.*
+terraform/*.bak
+
+# Claude Code session state
+.claude/
 
 # Python / Locust
 __pycache__/
