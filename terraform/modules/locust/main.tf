@@ -137,10 +137,15 @@ resource "aws_security_group_rule" "lb_metrics_from_locust" {
 locals {
   user_data = <<-EOT
     #!/bin/bash
-    set -euxo pipefail
-    dnf install -y python3-pip awscli
-    pip install --upgrade pip
-    pip install locust
+    set -uxo pipefail
+    # AL2023 ships with RPM-owned pip/setuptools that cannot be uninstalled
+    # in-place; locust needs a newer setuptools to build its deps. Install
+    # into a dedicated venv so system packages are untouched.
+    dnf install -y python3-pip gcc python3-devel awscli || true
+    python3 -m venv /opt/locust-venv
+    /opt/locust-venv/bin/pip install --upgrade pip setuptools wheel
+    /opt/locust-venv/bin/pip install locust
+    ln -sf /opt/locust-venv/bin/locust /usr/local/bin/locust
     mkdir -p /opt/locust
     for i in 1 2 3 4 5; do
       if aws s3 cp s3://${aws_s3_bucket.results.id}/bootstrap/locustfile.py /opt/locust/locustfile.py; then
