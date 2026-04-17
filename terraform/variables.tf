@@ -55,3 +55,37 @@ variable "retries_enabled" {
   type        = bool
   default     = true
 }
+
+# Experiment 1 dual-tier backend topology.
+# On this branch, ecs_backend is split into strong + weak tiers registered
+# under separate Cloud Map services (api-strong.internal, api-weak.internal).
+
+variable "backend_strong_count" {
+  type    = number
+  default = 1
+}
+
+variable "backend_weak_count" {
+  type    = number
+  default = 1
+}
+
+variable "backend_strong_cpu" {
+  type    = string
+  default = "512"
+}
+
+variable "backend_strong_memory" {
+  type    = string
+  default = "1024"
+}
+
+variable "backend_weak_cpu" {
+  type    = string
+  default = "256"
+}
+
+variable "backend_weak_memory" {
+  type    = string
+  default = "512"
+}
