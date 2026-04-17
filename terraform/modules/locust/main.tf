@@ -106,7 +106,7 @@ resource "aws_iam_instance_profile" "locust" {
 # SG: outbound all (SSM endpoints, NLB, S3, PyPI). Inbound: none.
 resource "aws_security_group" "locust" {
   name        = "${var.service_name}-locust-sg"
-  description = "Locust EC2 — egress only; SSM-only access."
+  description = "Locust EC2 - egress only; SSM-only access."
   vpc_id      = var.vpc_id
 
   egress {
