@@ -4,9 +4,11 @@
 *.exe
 *.out
 
-# Metrics output
-*.json
-*.csv
+# Metrics output (project-root only — keep results/ tracked)
+/*.json
+/*.csv
+metrics.json
+metrics.json.csv
 
 # Terraform
 terraform/.terraform/
