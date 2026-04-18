@@ -74,9 +74,13 @@ class AlgorithmCompareUser(FastHttpUser):
 #
 # Recommended: 50 to 200 concurrent users, 3-5 minute runs.
 class ChaosInjectionUser(FastHttpUser):
+    # Task weights dialed down per Sai's guidance: prior 6/2/1/1 (~30% chaos)
+    # saturated the backend DOWN-marking and produced 99% 503 cascades that
+    # masked the retry-on vs retry-off delta. Now 18/1/1/1 (~14% chaos)
+    # keeps enough chaos to test retry efficacy without pool collapse.
     wait_time = between(0.1, 0.5)
 
-    @task(6)
+    @task(18)
     def normal_request(self):
         with self.client.get(
                 "/api/data",
@@ -90,7 +94,7 @@ class ChaosInjectionUser(FastHttpUser):
 
     # Chaos: force a 500 from the backend. The LB should retry on a
     # different backend for GET requests, masking the error from the client.
-    @task(2)
+    @task(1)
     def chaos_error_request(self):
         with self.client.get(
                 "/api/data",

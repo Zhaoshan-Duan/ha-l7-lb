@@ -14,12 +14,8 @@ output "lb_cluster_name" {
   value = module.ecs_lb.cluster_name
 }
 
-output "backend_cluster_name_strong" {
-  value = module.ecs_backend_strong.cluster_name
-}
-
-output "backend_cluster_name_weak" {
-  value = module.ecs_backend_weak.cluster_name
+output "backend_cluster_name" {
+  value = module.ecs_backend.cluster_name
 }
 
 # Locust load generator — drive runs via `aws ssm send-command --instance-ids`

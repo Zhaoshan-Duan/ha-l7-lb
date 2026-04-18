@@ -13,13 +13,10 @@ load_balancer:
 
 route:
   # Changeable per experiment: round-robin | least-connections | weighted
-  # Experiment 1 weighted-hetero: 70/30 split between strong and weak tiers.
-  policy: "weighted"
+  policy: "round-robin"
   backends:
-    - endpoint: "http://api-strong.internal:8080"
-      weight: 70
-    - endpoint: "http://api-weak.internal:8080"
-      weight: 30
+    - endpoint: "http://api.internal:8080"
+      weight: 100
 
 health_check:
   interval: 10s
