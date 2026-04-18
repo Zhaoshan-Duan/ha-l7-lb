@@ -243,3 +243,51 @@ class BackendStressUser(FastHttpUser):
                 resp.success()
             else:
                 resp.failure(f"Stream failed: {resp.status_code}")
+
+
+# Experiment 3b: Horizontal Scaling with CPU-bound backend work.
+#
+# Same LB-count sweep as Experiment 3, but every request exercises the
+# CPU-heavy /api/compute endpoint (~100-300ms of SHA-256 hashing per
+# request). With heavy per-request backend work, the LB is no longer
+# the obvious bottleneck -- backends share the load and Redis Pub/Sub
+# coordination overhead becomes visible at higher LB counts.
+class ScalingBaselineComputeUser(FastHttpUser):
+    wait_time = between(0.01, 0.05)
+
+    @task(9)
+    def api_compute(self):
+        with self.client.get(
+                "/api/compute",
+                name="/api/compute",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Compute failed: {resp.status_code}")
+
+    @task(1)
+    def health_check(self):
+        with self.client.get("/health", name="/health", catch_response=True) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Health check failed: {resp.status_code}")
+
+
+class ScalingSpikeComputeUser(FastHttpUser):
+    """Extreme burst load against /api/compute (CPU-bound)."""
+    wait_time = between(0.001, 0.01)
+
+    @task
+    def api_compute(self):
+        with self.client.get(
+                "/api/compute",
+                name="/api/compute (spike)",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Compute failed: {resp.status_code}")
