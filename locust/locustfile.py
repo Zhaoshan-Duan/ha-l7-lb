@@ -134,6 +134,64 @@ class ChaosInjectionUser(FastHttpUser):
                 resp.failure(f"Health check failed: {resp.status_code}")
 
 
+# Experiment 2 Part A CPU-heavy variant: same chaos semantics as
+# ChaosInjectionUser but routed at /api/compute (CPU-bound ~10-30ms backend
+# work per request with iterations=2000) instead of /api/data (5-25ms).
+# Requires the backend to honor chaos headers on /api/compute too, which
+# the handleChaos helper in cmd/backend/main.go provides.
+class ChaosInjectionComputeUser(FastHttpUser):
+    wait_time = between(0.1, 0.5)
+
+    @task(18)
+    def normal_request(self):
+        with self.client.get(
+                "/api/compute?iterations=2000",
+                name="/api/compute (normal)",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Failed: {resp.status_code}")
+
+    @task(1)
+    def chaos_error_request(self):
+        with self.client.get(
+                "/api/compute?iterations=2000",
+                headers={"X-Chaos-Error": "500"},
+                name="/api/compute (chaos-500)",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            elif resp.status_code == 500:
+                resp.failure("Backend 500 (expected chaos)")
+            else:
+                resp.failure(f"Unexpected: {resp.status_code}")
+
+    @task(1)
+    def chaos_delay_request(self):
+        delay_ms = random.choice([6000, 8000, 10000])
+        with self.client.get(
+                "/api/compute?iterations=2000",
+                headers={"X-Chaos-Delay": str(delay_ms)},
+                name=f"/api/compute (chaos-delay-{delay_ms}ms)",
+                catch_response=True,
+        ) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Timeout/error: {resp.status_code}")
+
+    @task(1)
+    def health_check(self):
+        with self.client.get("/health", name="/health", catch_response=True) as resp:
+            if resp.status_code == 200:
+                resp.success()
+            else:
+                resp.failure(f"Health check failed: {resp.status_code}")
+
+
 # Experiment 3: Horizontal Scaling vs. State Contention.
 #
 # Baseline: run against a single LB instance until CPU saturation.

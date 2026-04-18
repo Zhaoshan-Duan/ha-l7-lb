@@ -1,201 +1,230 @@
 # Handoff — Final Experiment Data Bundle
 
 **Author**: Joshua Duan
-**Partner for the report**: S Karthikeyan S.
-**Run region**: us-west-2
-**LB count**: 2 (Exp 1, Exp 2); 1/2/4/8 (Exp 3)
+**Partner for the report**: S Karthikeyan Sura ("Sai")
+**AWS region**: us-west-2
+**Spec reference**: `~/Downloads/Experiments.md` (from Sai)
 
 ---
 
-## How to use this bundle
+## Layer map — what's spec-required vs complementary
 
-1. Numbers and tables in this doc are the already-digested findings.
-2. Per-run raw data lives in `results/final/<exp>/<run>/`.
-3. Screenshots are in the same folders.
-4. `RUNS.md` lists the exact commands used; `SCREENSHOTS.md` the capture checklist.
-5. For the report, the most-compact way to write each experiment is: state the hypothesis, cite the table below, drop in the key screenshot.
+### Layer 1 (Sai's spec, required)
+
+| Sai-prescribed work | Our folder | Status |
+|---------------------|-----------|--------|
+| Exp 1 — 6 core runs (RR/LC/W × homo/hetero) with `AlgorithmCompareUser` | `exp1/` + milestone 1 (`docs/milestone_1/report.md`) | **Complete** |
+| Exp 1 — robustness extension with `BackendStressUser` (subset OK) | `exp1_robustness/` | **Complete (homo RR subset)** |
+| Exp 2 Part A — chaos retry on/off | `exp2/` (original high-chaos) + `exp2a_low_chaos/` (repeat per Sai's 503 conditional) | **Complete** |
+| Exp 2 Part B — replica-removal retry on/off | `exp2b/` | **Complete** |
+| Exp 3 — lb_count 1/2/4/8 sweep with `ScalingBaselineUser` + `ScalingSpikeUser` | `exp3/` | **Complete** |
+
+### Layer 2 (complementary, goes beyond spec)
+
+| Extra work | Folder | Value |
+|-----------|--------|-------|
+| Exp 2 CPU-heavy variant (chaos on `/api/compute` with `ChaosInjectionComputeUser`) | `exp2a_compute_chaos/` | Shows the cascade mechanism is endpoint-agnostic |
+| Exp 3 CPU-heavy scaling with `BackendStressUser` | `exp3_compute/` | Shows backend-bound scaling behavior vs /api/data's LB-bound |
+| Exp 3b inconclusive attempts (default 50k iter compute, documented) | `exp3b/` | Negative result: default compute saturates backends + health cascade |
+| Multiple dashboards per Exp 3 run + wide overview | `exp3/*.png`, `exp3/dashboard_overview_u2000.png` | Extra visualization |
+| Sai conversation screenshots | `exp2/sai's comment on exp 2.png`, `sai comment on cpu end point .png` | Design-intent context |
 
 ---
 
 ## Exp 1 — Weighted on heterogeneous backends
 
-**Hypothesis**: the weighted routing algorithm distributes traffic proportionally to the configured weights, enabling heterogeneous backends to be utilized efficiently without overloading the weaker tier.
+**Hypothesis**: the weighted algorithm distributes traffic proportionally to configured weights.
 
-**Setup**:
-- 1 strong backend (Fargate 512 CPU / 1024 MB = 0.5 vCPU / 1 GiB)
-- 1 weak backend (Fargate 256 CPU / 512 MB = 0.25 vCPU / 0.5 GiB)
-- Weights: strong=70, weak=30 (`config.yaml` + two DNS watchers)
-- 2 LB instances, 500 concurrent users, 5 min, `AlgorithmCompareUser`
+**Setup**: 1 strong (Fargate 0.5 vCPU / 1 GiB) + 1 weak (0.25 vCPU / 0.5 GiB), weights 70/30, 2 LB instances, u=500, 5 min, `AlgorithmCompareUser`.
 
-**Files**: `results/final/exp1/weighted_hetero_70_30/`
+**Files**: `exp1/weighted_hetero_70_30/`
 
-**Headline numbers** (client-side, from Locust `stats.csv`):
+**Headline numbers**:
 
-| Metric | Aggregate |
-|--------|-----------|
+| Metric | Value |
+|--------|-------|
 | Total requests | 720,766 |
 | Failures | 0 |
-| Avg RPS | 2,405.7 |
-| p50 latency | 76 ms |
-| p95 latency | 170 ms |
-| p99 latency | 190 ms |
-| Max latency | 401 ms |
+| RPS | 2,405.7 |
+| p50 / p95 / p99 / max | 76ms / 170ms / 190ms / 401ms |
 
-**Per-backend distribution** (server-side, aggregated across both LB tasks from `lb_snapshots_end/*_metrics.json`):
+**Per-backend distribution** (aggregated across both LB tasks from `lb_snapshots_end/*_metrics.json`):
 
-| Backend | Private IP | Requests | % of total |
-|---------|-----------|----------|------------|
+| Backend | Private IP | Requests | % |
+|---------|-----------|----------|---|
 | Strong (0.5 vCPU) | 172.31.26.56 | 519,167 | **70.0%** |
 | Weak (0.25 vCPU) | 172.31.51.33 | 222,525 | **30.0%** |
 
-**The 70/30 split holds with four significant figures.** The weighted algorithm correctly follows the declared configuration.
+70/30 split holds with 4 significant figures. CPU utilization: LB 100%, strong backend 45%, weak backend 55% — LB is the bottleneck at 500 users, not either backend.
 
-**CPU utilization during run** (from CloudWatch dashboard `exp1-dashboard_end0.png`):
-
-| Component | CPU |
-|-----------|-----|
-| LB (both tasks aggregated) | ~100% sustained during minutes 1-4 |
-| Strong backend | ~45% |
-| Weak backend | ~55% |
-| Redis | near 0% |
-
-**Interpretation**: the LB is the bottleneck at 500 users, not either backend. The weak backend is more stressed than the strong (55% vs 45%) despite handling only 30% of traffic, consistent with its half-size CPU allotment. `RetryRate: 0` because all backends were healthy.
-
-**Screenshots**:
-- `exp1-dashboard_end0.png`, `exp1-dashboard_end1.png` — CloudWatch dashboard over the 5-min run window
-- `ecs_strong_config.png`, `ecs_strong_tasks.png` — proves strong tier Fargate task ran at 0.5 vCPU / 1 GiB
-- `ecs_weak_config.png`, `ecs_weak_tasks.png` — proves weak tier ran at 0.25 vCPU / 0.5 GiB
-
-**Caveats for the report**:
-- LB saturated at 100% CPU. Additional backend capacity wouldn't raise RPS — the LB is the limit.
-- Heterogeneous RR and LC results from milestone 1 (`docs/milestone_1/report.md`) remain canonical for those algorithms. The new weighted result completes the matrix.
-- No retry activity (retries_enabled=true default, but backends healthy).
+Screenshots: `exp1-dashboard_end0.png`, `exp1-dashboard_end1.png`, `ecs_strong_config.png`, `ecs_strong_tasks.png`, `ecs_weak_config.png`, `ecs_weak_tasks.png`.
 
 ---
 
-## Exp 2 — Failure isolation and retry efficacy under chaos
+## Exp 1 robustness extension — `BackendStressUser` on homo RR
 
-**Hypothesis**: idempotent-method retry reduces client-visible error rate when individual backends fail.
+**Hypothesis**: verify the LB holds up under heavier, mixed CPU/payload/streaming workload.
 
-**Setup**:
-- 2 LB instances, homogeneous backends, `ChaosInjectionUser`
-- 20% of requests forced to 500 via `X-Chaos-Error` header; ~10% delayed past proxy timeout via `X-Chaos-Delay` header
-- 50 / 100 / 200 concurrent users × 5 min × 2 variants (`retries_enabled=true` / `=false`) = 6 runs
+**Setup**: 2 LB tasks, 2 homogeneous backends, `BackendStressUser` at u=20 × 5 min, policy round-robin.
 
-**Files**: `results/final/exp2/retry_{on,off}_{50,100,200}/`
+**Files**: `exp1_robustness/homo_rr_stress_u20/`
 
-**Headline table**:
+**Headline**: 15,758 requests, **0 failures**, RPS 52.6, p50 17ms, p95 2000ms, p99 2100ms.
 
-| Users | retries_enabled | Total reqs | Failure % | p50 |
-|-------|-----------------|-----------|-----------|-----|
-| 50  | true  | 48,254  | **99%** | 1 ms  |
-| 100 | true  | 96,403  | **99%** | 1 ms  |
-| 200 | true  | 194,351 | **99%** | 1 ms  |
-| 50  | false | 18,197  | 29%   | 19 ms |
-| 100 | false | 36,183  | 29%   | 19 ms |
-| 200 | false | 72,691  | 30%   | 19 ms |
+The p95/p99 are dominated by `/api/stream`'s inherent 2-second hold. Per-endpoint RPS mix matches `BackendStressUser`'s 40/30/15/15 task weight distribution. Zero failures confirms the LB handles the stress endpoints without issues at this load.
 
-**Counterintuitive finding**: enabling retries makes the system *dramatically worse* under sustained 5xx chaos, flipping client failure rate from roughly 30% (the injected chaos rate) to 99%.
-
-**Mechanism**: each 5xx triggers `pool.MarkHealthy(backend, false)` in `proxy.go:181`. Under 20% chaos at 50+ users, both backends get marked DOWN within seconds. The LB then returns instant `503 No healthy backends` (p50=1 ms, LB-side) for all subsequent traffic until the 10s health checker re-UPs them. Under persistent chaos, the checker cannot outpace the ejection rate and the LB spends most of its time in cascade.
-
-**Why retries_enabled=false avoids the cascade**: with the retry block disabled, failing requests return 504 immediately and backends are never marked DOWN via the retry path. The health checker then sees steady `/health` responses and keeps backends marked UP, so normal traffic (80% non-chaos) flows at real backend latency (p50=19 ms).
-
-**Design gap, not a bug**: the retry policy assumes transient, uncorrelated failures. Under correlated 5xx (chaos here; a downstream outage in production), the "mark DOWN + retry elsewhere" policy amplifies rather than isolates the failure. Production L7 LBs (Envoy, NGINX, HAProxy) all add safeguards we don't have:
-- Minimum-healthy-backends threshold (don't eject the last healthy one)
-- Ejection rate limit (no more than N DOWN marks per second)
-- Consecutive-failure requirement (N in a row, not one)
-- Graduated half-open probe on re-admission
-
-**Screenshots**:
-- `retry_on_200/dashboard.png` — dashboard at the 23:25–23:30 UTC window. LB CPU low (instant 503s are cheap), backend CPU thrashes as it cycles between UP and DOWN.
-- `retry_off_200/dashboard.png` — 23:47–23:52 UTC. LB CPU steady, backend CPU steady, real traffic flowing.
-
-**Raw data per run**:
-- `stats.csv` — per-endpoint aggregate (/api/data (normal), /api/data (chaos-500), /api/data (chaos-delay-Nms), /health)
-- `stats_history.csv` — 10-second time-series
-- `failures.csv` — failure class breakdown
-- `report.html` — self-contained Locust HTML report
+**Caveat**: Sai's spec allows "full matrix or a subset." We ran a subset (1 policy × 1 topology). A full matrix would add LC + weighted variants on homo and hetero; skipped for time.
 
 ---
 
-## Exp 3 — Horizontal scaling (LB count sweep)
+## Exp 2 Part A — Chaos injection + retry efficacy
 
-**Hypothesis**: Redis Pub/Sub coordination overhead becomes the bottleneck as LB count grows, causing sublinear RPS scaling.
+### Original runs (30% chaos) — `exp2/`
 
-**Setup**:
-- Homogeneous backends (auto-scaled 2-8 on 70% CPU target)
-- `ScalingBaselineUser` at 500 and 2000 users (5 min each), `ScalingSpikeUser` at 2000 users (3 min)
-- LB count swept at 1 / 2 / 4 / 8
-- 12 runs total, all against `/api/data` (LB-isolation workload)
+| Users | retries_enabled | Total reqs | Failure % |
+|-------|-----------------|-----------|-----------|
+| 50/100/200 | true | ~48k/96k/194k | **99%** |
+| 50/100/200 | false | ~18k/36k/73k | 29% |
 
-**Files**: `results/final/exp3/lb{1,2,4,8}_{u500,u2000,spike}/`
+**Finding**: with aggressive chaos, LB 5xx → DOWN-marking cascades → 99% client failure (p50 collapses to 1ms LB-side 503). Disabling retries avoids the cascade but gives the pure chaos rate.
+
+### Low-chaos repeat (Sai's conditional) — `exp2a_low_chaos/`
+
+Sai's spec: "If outcomes are dominated by 503 … reduce chaos intensity … then repeat." `ChaosInjectionUser` task weights dialed from 6/2/1/1 (~30% chaos) to 18/1/1/1 (~14% chaos).
+
+| Users | retries_enabled | Total reqs | Failure % |
+|-------|-----------------|-----------|-----------|
+| 50 | true | 45,529 | 91% |
+| 100 | true | 95,590 | 97% |
+| 200 | true | 192,943 | 98% |
+| 50 | false | 26,456 | 9% |
+| 100 | false | 53,714 | 9% |
+| 200 | false | 106,590 | 9% |
+
+**Cleaner gap but same mechanism**: retry_off closely matches the pure chaos rate (~9%, consistent with 14% chaos rate minus successful normal traffic). retry_on still cascades but at 91-98% (slightly lower than the 99% at 30% chaos). The retry+eject policy is still dominant even at reduced chaos intensity — the cascade is structural.
+
+**Interpretation for the report**: retry helps when failures are transient and uncorrelated. When failures are correlated and persistent (chaos), the LB's eager DOWN-marking amplifies the failure. Production LBs (Envoy, NGINX, HAProxy) add safeguards we don't (min-healthy threshold, ejection rate limit, N-consecutive-failure).
+
+### CPU-heavy variant — `exp2a_compute_chaos/`
+
+Same matrix but against `/api/compute?iterations=2000` (backend patched to honor chaos headers on /api/compute via `handleChaos` helper). Used `ChaosInjectionComputeUser` class.
+
+| Users | retries_enabled | Total reqs | Failure % |
+|-------|-----------------|-----------|-----------|
+| 50 | true | 45,996 | 92% |
+| 100 | true | 96,345 | 97% |
+| 200 | true | 193,779 | 98% |
+| 50 | false | 27,665 | 9% |
+| 100 | false | 55,108 | 9% |
+| 200 | false | 109,604 | 9% |
+
+**Result is essentially identical to /api/data low-chaos.** Cascade is endpoint-agnostic — the retry+eject policy responds to any 5xx, not to workload characteristics. Strong evidence that the finding generalizes.
+
+---
+
+## Exp 2 Part B — Replica removal (no chaos) — `exp2b/`
+
+**Hypothesis**: retry hides a graceful replica drop from the client.
+
+**Setup**: Backends scaled to 4, `ScalingBaselineUser` at u=200 × 10 min, replica dropped to 3 at T+150s. Compared retries_enabled on vs off on /api/data only.
+
+| Variant | Requests | Failures | Fail % | RPS | p99 |
+|---------|----------|----------|--------|-----|-----|
+| retry_on_replicadrop | 850,924 | **18** | **0.002%** | 1420 | 190ms |
+| retry_off_replicadrop | 692,695 | **784** | **0.11%** | 1157 | 280ms |
+
+**Key finding**: retry makes the replica drop nearly invisible to the client — 44× failure reduction. The 784 failures in retry_off (504 gateway timeouts for in-flight requests against the draining backend) are exactly what Sai's spec describes as the cost of no-retry.
+
+Unlike the chaos scenario, the replica drop is transient and isolated — retry's intended use case. No cascade.
+
+---
+
+## Exp 3 — LB horizontal scaling — `exp3/`
+
+**Hypothesis**: adding LB instances scales throughput until Redis coordination overhead limits it.
+
+**Setup**: homogeneous backends, `ScalingBaselineUser` at u=500 and u=2000, `ScalingSpikeUser` at u=2000, lb_count swept 1/2/4/8.
 
 **Headline table**:
 
-| LB | 500 u RPS | 500 u p99 | 2000 u RPS | 2000 u p99 | Spike RPS | Spike p99 |
-|----|-----------|-----------|------------|------------|-----------|-----------|
-| 1  | 2,427     | 370 ms    | **1,188** (collapse) | **11 s**  | 1,170     | 10 s      |
-| 2  | 2,794     | 280 ms    | 2,699      | 10 s       | 2,690     | 10 s      |
-| 4  | 4,308     | 170 ms    | 4,757      | 7.2 s      | 4,746     | 6.6 s     |
-| 8  | 5,777     | 160 ms    | 5,093      | **250 ms** | 5,088     | 350 ms    |
+| LB | 500u RPS | 500u p99 | 2000u RPS | 2000u p99 | Spike RPS | Spike p99 |
+|----|----------|----------|-----------|-----------|-----------|-----------|
+| 1  | 2,427    | 370ms    | **1,188 (collapse)** | **11s**  | 1,170     | 10s       |
+| 2  | 2,794    | 280ms    | 2,699     | 10s       | 2,690     | 10s       |
+| 4  | 4,308    | 170ms    | 4,757     | 7.2s      | 4,746     | 6.6s      |
+| 8  | 5,777    | 160ms    | 5,093     | **250ms** | 5,088     | 350ms     |
 
 **Findings**:
+1. Single LB collapses at 2000u (throughput drops 2,427 → 1,188 RPS, p99 balloons to 11s).
+2. Near-linear scaling 1→2→4 at 2000u.
+3. Sublinear at 4→8 (+7% RPS) but p99 drops 29× (7.2s → 250ms) — suggests bottleneck shifted off the LB.
 
-1. **Single LB collapses at 2000 users.** Throughput drops from 2,427 RPS (at 500 u) to 1,188 RPS (at 2000 u); p99 explodes from 370 ms to 11 s. Classic backpressure: with enough queueing the effective throughput falls below the unloaded single-user rate. This is a real and citeable finding about when a single LB tips over.
+Screenshots: `exp3/lb1_u2000/dashboard.png`, `lb2_u2000/`, `lb4_u2000/`, `lb8_u2000/`, and a wide `dashboard_overview_u2000.png` covering the whole 4-run arc at 00:01→00:57 UTC.
 
-2. **Near-linear scaling 1→2→4 at 2000 users**: 1,188 → 2,699 → 4,757 RPS corresponds to multipliers of 2.3× and 4.0× (vs the ideal 2× and 4×). Linear scaling holds to 4 LBs with this workload.
+### Exp 3 CPU-heavy variant — `exp3_compute/`
 
-3. **Sublinear scaling 4→8**: only +7% RPS (4,757 → 5,093) but p99 drops 29× (7.2 s → 250 ms). The RPS plateau plus the latency drop suggests the bottleneck shifted off the LB — the extra LB tasks are now just reducing queueing at the existing per-LB rate. Candidates for the new bottleneck: Locust client (c6i.xlarge, 4 vCPU), NLB, or backend autoscaling lag. Redis Pub/Sub overhead is NOT visible as a dominant factor under this workload; it would need a CPU-heavier backend to surface.
+Same lb_count sweep but with `BackendStressUser` at u=20 × 5 min (dropped user count to avoid backend saturation cascade from the default 50k-iteration compute work).
 
-4. **Spike behavior mirrors baseline**: at each LB count the spike RPS is within 1% of the sustained 2000-user RPS, indicating the spike load is not materially different from the sustained case in our parameter range.
+| LB | Requests | Failures | RPS | p50 | p99 |
+|----|----------|----------|-----|-----|-----|
+| 1  | 14,952   | 0        | 49.9 | 54ms | 2300ms |
+| 2  | 16,761   | 0        | 55.97 | 16ms | 2000ms |
+| 4  | 17,250   | 0        | 57.59 | 18ms | 2100ms |
+| 8  | 16,606   | 0        | 55.44 | 18ms | 2100ms |
 
-**Raw data per run**: `stats.csv`, `stats_history.csv`, `failures.csv`, `report.html`.
+**Finding**: scaling plateaus at lb=2. CPU-bound backend work makes backends the bottleneck earlier than LB. p99 is dominated by `/api/stream`'s inherent 2-second hold, not by LB latency. **Different scaling story** from /api/data: under real CPU work, extra LB capacity past 2 tasks provides no throughput gain.
 
-**Caveats for the report**:
-- All runs use `/api/data` (trivial ~5-25 ms backend work). The scaling story isolates the LB; backend saturation is intentionally not a factor.
-- 0 failures across all 12 runs. The scaling signal is clean.
-- For LB counts beyond 4, Locust (single c6i.xlarge host, 4 vCPU) begins to compete for CPU with the LB fleet — the 4→8 plateau may be partially client-side. A multi-instance Locust harness would let us push this further.
+### Exp 3b inconclusive (documented negative result) — `exp3b/`
 
----
-
-## Exp 3b — Compute-heavy scaling (attempted, inconclusive)
-
-**Hypothesis**: under CPU-heavy backend work the scaling curve differs from Exp 3's LB-isolation result — backends become the bottleneck and LB count matters less.
-
-**Outcome**: attempted but did not produce clean numbers. See `results/final/exp3b/README.md` for the full analysis.
-
-**Summary**: compute workload saturates the 256-CPU Fargate backends so heavily that the `/health` probe queues behind `/api/compute` work, times out, and the health checker marks backends DOWN. Result: 94-99% client-visible 503s regardless of `retries_enabled`, across u=50/100/500.
-
-**Implication**: `/api/compute` at these user counts is not measuring LB-scaling at all — it's measuring backend capacity plus the health-check-timeout cascade. A cleaner Exp 3b would require any of:
-- u << backend capacity (e.g., u=10–20)
-- `/api/compute?iterations=1000` to reduce per-request cost to milliseconds
-- Increased `health_check.timeout` beyond backend p99 under load
-- Decoupled health-check serving path on the backend (separate pool)
-
-We captured the SSM command stderr logs for three representative attempts (`results/final/exp3b/*_attempt/locust.log`) as evidence.
-
-**For the report**: frame Exp 3b as a negative result that motivates future work, not a scaling measurement. Exp 3 `/api/data` remains the authoritative scaling signal.
+Early attempts ran `BackendStressUser` / `ScalingBaselineComputeUser` at u=50-500 with default 50k-iteration compute. All cascaded to 94-99% failure because backends saturate so hard that `/health` probes queue behind compute work and time out, triggering the health checker's DOWN-mark. Documented in `exp3b/README.md` with `locust.log` files.
 
 ---
 
-## Cross-experiment summary for quick reference
+## Cross-experiment summary table
 
-| Experiment | Configuration | Result |
-|-----------|---------------|--------|
-| Exp 1 weighted-hetero | 70/30 strong/weak | 70/30 distribution holds to 4 sig figs; LB saturates first |
-| Exp 2 retry on vs off | 20% chaos-500 | **Retries make failure rate 99% vs 29%** — cascading ejection under correlated failure |
-| Exp 3 /api/data scaling | lb=1/2/4/8 | Near-linear 1→4, sublinear 4→8; single LB collapses at 2000 u |
-| Exp 3b /api/compute scaling | — | Compute saturates backends; health-check cascade prevents clean LB-scaling measurement |
+| Experiment | Setup | Result |
+|-----------|-------|--------|
+| Exp 1 weighted hetero /api/data | u=500, 2 LB, strong+weak | 70/30 split holds; LB is bottleneck |
+| Exp 1 robustness homo RR mix | u=20, 2 LB | 0 failures, p99 2.1s (stream-bound) |
+| Exp 2 Part A high chaos (/api/data) | 30% chaos × retry on/off × 50/100/200u | 99% fail retry_on; 29% retry_off |
+| Exp 2 Part A low chaos (/api/data) | 14% chaos × retry on/off × 50/100/200u | 91-98% fail retry_on; 9% retry_off |
+| Exp 2 Part A low chaos /api/compute | same but /api/compute | identical pattern → cascade is endpoint-agnostic |
+| Exp 2 Part B replica drop /api/data | u=200 × 10min × retry on/off × drop one replica | retry_on 0.002% fail; retry_off 0.11% fail (44× gap) |
+| Exp 3 scaling /api/data | 1/2/4/8 LB × 500u/2000u/spike | lb=1 collapses at 2000u; near-linear 1→4; sublinear 4→8 |
+| Exp 3 scaling CPU-heavy | 1/2/4/8 LB × u=20 BackendStressUser | plateaus at lb=2; backends bottleneck |
+| Exp 3b inconclusive | default compute at u=50-500 | cascade; documented negative result |
 
 ---
 
 ## Infrastructure summary
 
-- **Terraform**: `terraform/` — one module per concern (network, ecr, ecs-lb, ecs-backend, nlb, elasticache, autoscaling, logging, locust)
-- **Locust runner**: `terraform/modules/locust/` — single `c6i.xlarge` EC2 driven via SSM Run Command; no SSH; artifacts land in S3
-- **CloudWatch dashboard**: `terraform/dashboard.tf` — one dashboard with all panels for LB, backend (strong/weak/homogeneous), Redis, NLB
-- **Helper scripts**: `scripts/run_locust.sh` (per-run driver), `scripts/capture_lb_metrics.sh` (per-LB-task metrics snapshot)
-- **Retry toggle**: `load_balancer.retries_enabled` in `config.yaml`, overridable via `RETRIES_ENABLED` env var (ECS task definition)
+- **Terraform**: `terraform/` with modules for network, ecr, ecs-lb, ecs-backend, nlb, elasticache, autoscaling, logging, locust. Plus a CloudWatch dashboard resource at `terraform/dashboard.tf`.
+- **Locust runner**: `terraform/modules/locust/` — single `c6i.xlarge` EC2 driven via AWS SSM Run Command, no SSH keys. Results land in S3.
+- **Helper scripts**: `scripts/run_locust.sh` (per-run driver), `scripts/run_locust_with_replica_drop.sh` (Part B coordinator), `scripts/capture_lb_metrics.sh` (per-task /metrics snapshot).
+- **Code changes landed on main**:
+  - `config.yaml`: `retries_enabled` flag
+  - `internal/config/`: env-var override for `RETRIES_ENABLED`
+  - `internal/proxy/`: retries-disabled gate
+  - `cmd/backend/main.go`: `handleChaos` helper, applied on both /api/data and /api/compute
+  - `locust/locustfile.py`: added `ChaosInjectionComputeUser`, `ScalingBaselineComputeUser`, `ScalingSpikeComputeUser`; `ChaosInjectionUser` task weights dialed down per Sai's guidance
 
-Infrastructure is torn down post-experiments. CloudWatch metrics persist for 15 days if additional screenshots are needed before teardown.
+---
+
+## Open items for the teammate
+
+1. **CloudWatch screenshots**: captured for Exp 1 (6 shots), Exp 2 200u dashboards + Locust PDFs, Exp 3 u=2000 per-lb dashboards + wide overview. Still missing: dashboards for Phase 2-5 new runs (Part B replica drop, low-chaos repeat, CPU-heavy compute chaos, Exp 3 CPU-heavy scaling, Exp 1 robustness). CloudWatch metrics persist 15 days — capture from the dashboard URL using the UTC run windows noted in each run's `run.txt` / the HANDOFF table timestamps.
+2. **Exp 1 robustness matrix**: spec allows subset (done). If teammate wants the full 6-cell matrix, re-provisioning dual-tier + 3 policies × 2 topologies = ~80 min extra.
+3. **Report writing**: teammate's job. HANDOFF.md above has pre-digested numbers + mechanism explanations for each experiment.
+
+---
+
+## AWS teardown
+
+All infra destroyed after final runs. Verification commands returned empty (no running resources):
+
+- `aws ec2 describe-instances --filters Name=instance-state-name,Values=running`
+- `aws ecs list-clusters`
+- `aws elasticache describe-cache-clusters`
+- `aws s3 ls` (no ha-l7-lb prefixes)
+
+Session AWS cost: ~$5-6 (personal account).
