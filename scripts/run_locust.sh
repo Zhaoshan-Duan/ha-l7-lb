@@ -38,8 +38,11 @@ S3_PREFIX="s3://${BUCKET}/${RUN_ID}"
 echo "[run_locust] $RUN_ID -> nlb=$NLB_DNS users=$USERS rate=$SPAWN_RATE dur=${DURATION_MIN}m"
 
 # Compose the shell script that will run on the EC2.
+# Locust can exit non-zero under chaos (failures ARE the Exp 2 signal).
+# Treat locust failure as soft — still upload artifacts if they exist.
+# Fail hard only if locust didn't produce any CSVs at all.
 read -r -d '' CMD <<EOF || true
-set -euo pipefail
+set -uo pipefail
 cd /opt/locust
 rm -f run-*.csv run-*.html
 locust --headless \
@@ -49,11 +52,12 @@ locust --headless \
   --html run-${RUN_SLUG}.html \
   --only-summary \
   -f locustfile.py \
-  ${USER_CLASS}
+  ${USER_CLASS} || true
+[ -f run-${RUN_SLUG}_stats.csv ] || { echo "locust produced no stats.csv"; exit 1; }
 aws s3 cp run-${RUN_SLUG}_stats.csv         ${S3_PREFIX}/stats.csv
-aws s3 cp run-${RUN_SLUG}_stats_history.csv ${S3_PREFIX}/stats_history.csv
-aws s3 cp run-${RUN_SLUG}_failures.csv      ${S3_PREFIX}/failures.csv
-aws s3 cp run-${RUN_SLUG}.html              ${S3_PREFIX}/report.html
+aws s3 cp run-${RUN_SLUG}_stats_history.csv ${S3_PREFIX}/stats_history.csv || true
+aws s3 cp run-${RUN_SLUG}_failures.csv      ${S3_PREFIX}/failures.csv || true
+aws s3 cp run-${RUN_SLUG}.html              ${S3_PREFIX}/report.html || true
 EOF
 
 # Build the SSM payload using jq so newlines are correctly JSON-escaped.

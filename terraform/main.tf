@@ -142,6 +142,35 @@ module "ecs_lb" {
 }
 
 # --- Docker Builds ---
+#
+# Docker images rebuild when ANY tracked source file changes. Without a
+# trigger, the docker provider only notices name/path changes, so
+# changing config.yaml or *.go code silently uses the cached image on
+# the next apply. The triggers hash the build context so content
+# changes force a fresh build and ECR push.
+
+locals {
+  lb_build_hash = sha1(join("", [
+    for f in setunion(
+      fileset("../", "cmd/lb/**/*.go"),
+      fileset("../", "internal/**/*.go"),
+      fileset("../", "config.yaml"),
+      fileset("../", "Dockerfile.lb"),
+      fileset("../", "go.mod"),
+      fileset("../", "go.sum"),
+    ) : filesha1("../${f}")
+  ]))
+
+  backend_build_hash = sha1(join("", [
+    for f in setunion(
+      fileset("../", "cmd/backend/**/*.go"),
+      fileset("../", "internal/**/*.go"),
+      fileset("../", "Dockerfile.backend"),
+      fileset("../", "go.mod"),
+      fileset("../", "go.sum"),
+    ) : filesha1("../${f}")
+  ]))
+}
 
 resource "docker_image" "lb" {
   name = "${module.ecr_lb.repository_url}:latest"
@@ -149,10 +178,12 @@ resource "docker_image" "lb" {
     context    = "../"
     dockerfile = "Dockerfile.lb"
   }
+  triggers = { src_hash = local.lb_build_hash }
 }
 
 resource "docker_registry_image" "lb" {
-  name = docker_image.lb.name
+  name     = docker_image.lb.name
+  triggers = { src_hash = local.lb_build_hash }
 }
 
 resource "docker_image" "backend" {
@@ -161,10 +192,12 @@ resource "docker_image" "backend" {
     context    = "../"
     dockerfile = "Dockerfile.backend"
   }
+  triggers = { src_hash = local.backend_build_hash }
 }
 
 resource "docker_registry_image" "backend" {
-  name = docker_image.backend.name
+  name     = docker_image.backend.name
+  triggers = { src_hash = local.backend_build_hash }
 }
 
 # --- Locust Load Generator ---
