@@ -55,11 +55,16 @@ resource "aws_service_discovery_private_dns_namespace" "internal" {
   vpc         = module.network.vpc_id
 }
 
-# --- Dynamic Scalable Backend ---
+# --- Dual-Tier Backend (Experiment 1: weighted heterogeneous) ---
+#
+# Strong and weak backends are registered to separate Cloud Map services
+# so the LB can resolve each tier independently. The LB config lists
+# both endpoints with different weights, and one DNS watcher per endpoint
+# syncs backends under a unique source tag, letting the weighted
+# algorithm route traffic proportionally between the two CPU classes.
 
-# A single Cloud Map service. All backend tasks will register here.
-resource "aws_service_discovery_service" "backend" {
-  name = "api"
+resource "aws_service_discovery_service" "backend_strong" {
+  name = "api-strong"
   dns_config {
     namespace_id = aws_service_discovery_private_dns_namespace.internal.id
     dns_records {
@@ -69,10 +74,20 @@ resource "aws_service_discovery_service" "backend" {
   }
 }
 
-# The unified ECS backend cluster
-module "ecs_backend" {
+resource "aws_service_discovery_service" "backend_weak" {
+  name = "api-weak"
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.internal.id
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+  }
+}
+
+module "ecs_backend_strong" {
   source               = "./modules/ecs-backend"
-  service_name         = "api-backend"
+  service_name         = "api-backend-strong"
   image                = "${module.ecr_backend.repository_url}:latest"
   container_port       = var.backend_port
   subnet_ids           = module.network.subnet_ids
@@ -80,21 +95,30 @@ module "ecs_backend" {
   execution_role_arn   = data.aws_iam_role.execution_role.arn
   task_role_arn        = data.aws_iam_role.execution_role.arn
   log_group_name       = module.logging.log_group_name
-  ecs_count            = var.backend_min
+  ecs_count            = var.backend_strong_count
+  cpu                  = var.backend_strong_cpu
+  memory               = var.backend_strong_memory
   region               = var.aws_region
-  service_registry_arn = aws_service_discovery_service.backend.arn
+  service_registry_arn = aws_service_discovery_service.backend_strong.arn
   depends_on           = [docker_registry_image.backend]
 }
 
-# Autoscaling policy linked to the unified backend cluster
-module "autoscaling_backend" {
-  source           = "./modules/autoscaling"
-  service_name     = "api-backend"
-  ecs_cluster_name = module.ecs_backend.cluster_name
-  ecs_service_name = module.ecs_backend.service_name
-  min_capacity     = var.backend_min
-  max_capacity     = var.backend_max
-  cpu_target_value = var.cpu_target_value
+module "ecs_backend_weak" {
+  source               = "./modules/ecs-backend"
+  service_name         = "api-backend-weak"
+  image                = "${module.ecr_backend.repository_url}:latest"
+  container_port       = var.backend_port
+  subnet_ids           = module.network.subnet_ids
+  security_group_ids   = [module.network.backend_security_group_id]
+  execution_role_arn   = data.aws_iam_role.execution_role.arn
+  task_role_arn        = data.aws_iam_role.execution_role.arn
+  log_group_name       = module.logging.log_group_name
+  ecs_count            = var.backend_weak_count
+  cpu                  = var.backend_weak_cpu
+  memory               = var.backend_weak_memory
+  region               = var.aws_region
+  service_registry_arn = aws_service_discovery_service.backend_weak.arn
+  depends_on           = [docker_registry_image.backend]
 }
 
 # --- Load Balancer ---
